@@ -98,7 +98,7 @@ const CHARS: &[char] = &[
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
-pub const RENDEZVOUS_SERVERS: &[&str] = &["rd.bobohome.store"];
+pub const RENDEZVOUS_SERVERS: &[&str] = &["rd.bobohome.store","bobohome.ignorelist.com"];
 pub const RS_PUB_KEY: &str = "qwRw4z2gakEG5YQEVQTVqxlzryONTJqOAuoyCK3Lyzc=";
 
 pub const RENDEZVOUS_PORT: i32 = 8417;
