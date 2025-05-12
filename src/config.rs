@@ -101,10 +101,10 @@ const CHARS: &[char] = &[
 pub const RENDEZVOUS_SERVERS: &[&str] = &["rd.bobohome.store","bobohome.ignorelist.com"];
 pub const RS_PUB_KEY: &str = "qwRw4z2gakEG5YQEVQTVqxlzryONTJqOAuoyCK3Lyzc=";
 
-pub const RENDEZVOUS_PORT: i32 = 21116;
-pub const RELAY_PORT: i32 = 21117;
-pub const WS_RENDEZVOUS_PORT: i32 = 21118;
-pub const WS_RELAY_PORT: i32 = 21119;
+pub const RENDEZVOUS_PORT: i32 = 8417;
+pub const RELAY_PORT: i32 = 8418;
+pub const WS_RENDEZVOUS_PORT: i32 = 8419;
+pub const WS_RELAY_PORT: i32 = 8420;
 
 macro_rules! serde_field_string {
     ($default_func:ident, $de_func:ident, $default_expr:expr) => {
