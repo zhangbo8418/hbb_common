@@ -72,6 +72,11 @@ lazy_static::lazy_static! {
     pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
 }
 
+#[cfg(target_os = "android")]
+lazy_static::lazy_static! {
+    pub static ref ANDROID_RUSTLS_PLATFORM_VERIFIER_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+}
+
 lazy_static::lazy_static! {
     pub static ref APP_DIR: RwLock<String> = Default::default();
 }
