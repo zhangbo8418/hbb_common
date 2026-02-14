@@ -588,6 +588,7 @@ impl Config {
             store = true;
         }
         if !id_valid {
+            log::warn!("ID is invalid, generating new one");
             for _ in 0..3 {
                 if let Some(id) = Config::gen_id() {
                     config.id = id;
@@ -918,6 +919,7 @@ impl Config {
                     id = (id << 8) | (*x as u32);
                 }
                 id &= 0x1FFFFFFF;
+                log::info!("Generated id {}", id);
                 Some(id.to_string())
             } else {
                 None
@@ -994,6 +996,27 @@ impl Config {
 
     pub fn get_cached_pk() -> Option<Vec<u8>> {
         KEY_PAIR.lock().unwrap().clone().map(|k| k.1)
+    }
+
+    /// Get existing key pair without generating a new one.
+    /// Returns None if no key pair exists in cache or config file.
+    pub fn get_existing_key_pair() -> Option<KeyPair> {
+        let mut lock = KEY_PAIR.lock().unwrap();
+        if let Some(p) = lock.as_ref() {
+            return Some(p.clone());
+        }
+
+        // IMPORTANT: this path is called while holding KEY_PAIR lock.
+        // Config::load_ must remain a raw conf load/deserialize path and must never
+        // call decrypt_* / symmetric_crypt (directly or indirectly), otherwise this
+        // can re-enter key loading and deadlock.
+        let config = Config::load_::<Config>("");
+        if !config.key_pair.0.is_empty() {
+            *lock = Some(config.key_pair.clone());
+            Some(config.key_pair)
+        } else {
+            None
+        }
     }
 
     pub fn no_register_device() -> bool {
@@ -1356,12 +1379,29 @@ impl Config {
         }
         *lock = cfg;
         lock.store();
-        // Currently only tested on macOS, so this change is limited to macOS for safety.
+        // Drop CONFIG lock before acquiring KEY_PAIR lock to avoid potential deadlock.
         #[cfg(target_os = "macos")]
-        {
-            *KEY_PAIR.lock().unwrap() = Some(lock.key_pair.clone());
-        }
+        let new_key_pair = lock.key_pair.clone();
+        drop(lock);
+        #[cfg(target_os = "macos")]
+        Self::invalidate_key_pair_cache_if_changed(&new_key_pair);
         true
+    }
+
+    /// Invalidate KEY_PAIR cache if it differs from the new key_pair.
+    /// Use None to invalidate the cache instead of Some(key_pair).
+    /// If we use Some with an empty key_pair, get_key_pair() would always return
+    /// the empty key_pair from cache without regenerating.
+    /// By clearing the cache, get_key_pair() will reload and regenerate if needed.
+    #[cfg(target_os = "macos")]
+    fn invalidate_key_pair_cache_if_changed(new_key_pair: &KeyPair) {
+        let mut key_pair_cache = KEY_PAIR.lock().unwrap();
+        if let Some(cached) = key_pair_cache.as_ref() {
+            if cached != new_key_pair {
+                *key_pair_cache = None;
+                log::info!("key pair cache invalidated");
+            }
+        }
     }
 
     fn with_extension(path: PathBuf) -> PathBuf {
