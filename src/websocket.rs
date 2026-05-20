@@ -1,6 +1,8 @@
 use crate::{
     config::{
-        keys::OPTION_RELAY_SERVER, use_ws, Config, Socks5Server, RELAY_PORT, RENDEZVOUS_PORT,
+        keys::{OPTION_API_SERVER, OPTION_RELAY_SERVER},
+        use_ws, Config, Socks5Server, RELAY_PORT, RENDEZVOUS_PORT, WS_RELAY_PORT,
+        WS_RENDEZVOUS_PORT,
     },
     protobuf::Message,
     socket_client::split_host_port,
@@ -9,6 +11,7 @@ use crate::{
     tls::{get_cached_tls_accept_invalid_cert, get_cached_tls_type, upsert_tls_cache, TlsType},
     ResultType,
 };
+use url::Url;
 use anyhow::bail;
 use async_recursion::async_recursion;
 use bytes::{Bytes, BytesMut};
@@ -318,13 +321,68 @@ pub fn is_ws_endpoint(endpoint: &str) -> bool {
     endpoint.starts_with("ws://") || endpoint.starts_with("wss://")
 }
 
+/// Parsed `api-server` settings for WebSocket scheme and port policy.
+struct ApiServerWsInfo {
+    secure: bool,
+    /// `api-server` URL includes an explicit port (not implicit 80/443).
+    has_explicit_port: bool,
+}
+
+fn parse_api_server_for_ws(api_server: &str) -> ApiServerWsInfo {
+    if api_server.is_empty() {
+        return ApiServerWsInfo {
+            secure: false,
+            has_explicit_port: false,
+        };
+    }
+
+    if let Ok(url) = Url::parse(api_server) {
+        let secure = url.scheme() == "https";
+        let default_port = if secure { 443 } else { 80 };
+        return ApiServerWsInfo {
+            secure,
+            has_explicit_port: url.port().is_some() && url.port() != Some(default_port),
+        };
+    }
+
+    ApiServerWsInfo {
+        secure: api_server.starts_with("https"),
+        has_explicit_port: false,
+    }
+}
+
+/// Whether the configured rendezvous host string includes an explicit port.
+fn rendezvous_config_has_port() -> bool {
+    let custom = Config::get_option("custom-rendezvous-server");
+    if !custom.is_empty() {
+        return split_host_port(&custom).is_some();
+    }
+    false
+}
+
+fn ws_protocol(secure: bool) -> &'static str {
+    if secure { "wss" } else { "ws" }
+}
+
+fn format_ws_url(protocol: &str, host: &str, port: Option<i32>, path: &str) -> String {
+    match port {
+        Some(p) => format!("{}://{}:{}{}", protocol, host, p, path),
+        None => format!("{}://{}{}", protocol, host, path),
+    }
+}
+
 /**
  * Core function to convert an endpoint to WebSocket format
  *
  * Converts between different address formats:
- * 1. IPv4 address with/without port -> ws://ipv4:port
- * 2. IPv6 address with/without port -> ws://[ipv6]:port
- * 3. Domain with/without port -> ws(s)://domain/ws/path
+ * 1. IPv4 address with/without port -> ws(s)://ipv4:port (+2 from TCP port)
+ * 2. IPv6 address with/without port -> ws(s)://[ipv6]:port
+ * 3. Domain -> ws(s)://domain[:port]/ws/path
+ *    - Resolved `api-server` (option, derived, or built-in) without explicit port
+ *      -> ws/wss on 80/443 (omit port in URL)
+ *    - `api-server` with explicit port + `custom-rendezvous-server` without port
+ *      -> `WS_RENDEZVOUS_PORT` / `WS_RELAY_PORT`
+ *    - `custom-rendezvous-server` with port -> TCP port + 2
  *
  * @param endpoint The endpoint to convert
  * @return The converted WebSocket endpoint
@@ -373,23 +431,33 @@ pub fn check_ws(endpoint: &str) -> String {
         (true, endpoint_port + 2)
     };
 
-    let (address, is_domain) = if crate::is_ip_str(endpoint) {
-        (format!("{}:{}", endpoint_host, dst_port), false)
+    let api = parse_api_server_for_ws(&Config::get_api_server());
+    let protocol = ws_protocol(api.secure);
+
+    if crate::is_ip_str(endpoint) {
+        return format_ws_url(protocol, &endpoint_host, Some(dst_port), "");
+    }
+
+    let domain_path = if relay { "/ws/relay" } else { "/ws/id" };
+    let ws_port = domain_ws_port(&api, relay, dst_port);
+    format_ws_url(protocol, &endpoint_host, ws_port, domain_path)
+}
+
+fn domain_ws_port(api: &ApiServerWsInfo, relay: bool, dst_port: i32) -> Option<i32> {
+    if !api.has_explicit_port && !rendezvous_config_has_port() {
+        // api-server: http/https without port -> ws/wss on 80/443
+        None
+    } else if rendezvous_config_has_port() {
+        // custom-rendezvous-server with port -> TCP port + 2
+        Some(dst_port)
     } else {
-        let domain_path = if relay { "/ws/relay" } else { "/ws/id" };
-        (format!("{}{}", endpoint_host, domain_path), true)
-    };
-    let protocol = if is_domain {
-        let api_server = Config::get_option("api-server");
-        if api_server.starts_with("https") {
-            "wss"
+        // api-server with explicit port, rendezvous without port
+        Some(if relay {
+            WS_RELAY_PORT
         } else {
-            "ws"
-        }
-    } else {
-        "ws"
-    };
-    format!("{}://{}", protocol, address)
+            WS_RENDEZVOUS_PORT
+        })
+    }
 }
 
 #[cfg(test)]
@@ -409,9 +477,19 @@ mod tests {
         assert_eq!(check_ws("127.0.0.1:21115"), "ws://127.0.0.1:21118");
         assert_eq!(check_ws("127.0.0.1:21116"), "ws://127.0.0.1:21118");
         assert_eq!(check_ws("127.0.0.1:21117"), "ws://127.0.0.1:21119");
-        assert_eq!(check_ws("rustdesk.com:21115"), "ws://rustdesk.com/ws/id");
-        assert_eq!(check_ws("rustdesk.com:21116"), "ws://rustdesk.com/ws/id");
-        assert_eq!(check_ws("rustdesk.com:21117"), "ws://rustdesk.com/ws/relay");
+        // api-server empty -> built-in https://rd.bobohome.store:8415 -> wss + WS_RENDEZVOUS_PORT
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
+            &format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT - 1)),
+            &format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RELAY_PORT)),
+            &format!("wss://rustdesk.com:{}/ws/relay", WS_RELAY_PORT)
+        );
         // set relay-server without port
         Config::set_option("relay-server".to_string(), "127.0.0.1".to_string());
         Config::set_option(
@@ -420,20 +498,26 @@ mod tests {
         );
         assert_eq!(
             check_ws("[0:0:0:0:0:0:0:1]:21115"),
-            "ws://[0:0:0:0:0:0:0:1]:21118"
+            "wss://[0:0:0:0:0:0:0:1]:21118"
         );
         assert_eq!(
             check_ws("[0:0:0:0:0:0:0:1]:21116"),
-            "ws://[0:0:0:0:0:0:0:1]:21118"
+            "wss://[0:0:0:0:0:0:0:1]:21118"
         );
         assert_eq!(
             check_ws("[0:0:0:0:0:0:0:1]:21117"),
-            "ws://[0:0:0:0:0:0:0:1]:21119"
+            "wss://[0:0:0:0:0:0:0:1]:21119"
         );
-        assert_eq!(check_ws("rustdesk.com:21115"), "wss://rustdesk.com/ws/id");
-        assert_eq!(check_ws("rustdesk.com:21116"), "wss://rustdesk.com/ws/id");
         assert_eq!(
-            check_ws("rustdesk.com:21117"),
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
+            "wss://rustdesk.com/ws/id"
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT - 1)),
+            "wss://rustdesk.com/ws/id"
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RELAY_PORT)),
             "wss://rustdesk.com/ws/relay"
         );
         // set relay-server with default port
@@ -443,8 +527,14 @@ mod tests {
         assert_eq!(check_ws("127.0.0.1:21117"), "ws://127.0.0.1:21119");
         // set relay-server with custom port
         Config::set_option("relay-server".to_string(), "127.0.0.1:34567".to_string());
-        assert_eq!(check_ws("rustdesk.com:21115"), "wss://rustdesk.com/ws/id");
-        assert_eq!(check_ws("rustdesk.com:21116"), "wss://rustdesk.com/ws/id");
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
+            "wss://rustdesk.com/ws/id"
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT - 1)),
+            "wss://rustdesk.com/ws/id"
+        );
         assert_eq!(
             check_ws("rustdesk.com:34567"),
             "wss://rustdesk.com/ws/relay"
@@ -527,5 +617,64 @@ mod tests {
         assert_eq!(check_ws("127.0.0.1:23455"), "ws://127.0.0.1:23458");
         assert_eq!(check_ws("127.0.0.1:23456"), "ws://127.0.0.1:23458");
         assert_eq!(check_ws("127.0.0.1:34567"), "ws://127.0.0.1:34569");
+
+        // api-server without port -> wss on 443 (omit port in URL)
+        Config::set_option("custom-rendezvous-server".to_string(), "rustdesk.com".to_string());
+        Config::set_option(
+            OPTION_API_SERVER.to_string(),
+            "https://api.rustdesk.com".to_string(),
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
+            "wss://rustdesk.com/ws/id"
+        );
+
+        // api-server http without port -> ws on 80
+        Config::set_option(
+            OPTION_API_SERVER.to_string(),
+            "http://api.rustdesk.com".to_string(),
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
+            "ws://rustdesk.com/ws/id"
+        );
+
+        // api-server with explicit port, rendezvous without port -> WS_RENDEZVOUS_PORT
+        Config::set_option(
+            OPTION_API_SERVER.to_string(),
+            "https://api.example.com:8443".to_string(),
+        );
+        assert_eq!(
+            check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
+            &format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+        );
+
+        // custom rendezvous with port -> wss + TCP port + 2
+        Config::set_option(
+            "custom-rendezvous-server".to_string(),
+            "rd.example.com:8417".to_string(),
+        );
+        Config::set_option(
+            OPTION_API_SERVER.to_string(),
+            "https://api.example.com".to_string(),
+        );
+        assert_eq!(
+            check_ws(&format!("rd.example.com:{}", RENDEZVOUS_PORT)),
+            &format!("wss://rd.example.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+        );
+        assert_eq!(
+            check_ws(&format!("rd.example.com:{}", RELAY_PORT)),
+            &format!("wss://rd.example.com:{}/ws/relay", WS_RELAY_PORT)
+        );
+
+        // api without port + rendezvous with port -> still use TCP + 2
+        Config::set_option(
+            OPTION_API_SERVER.to_string(),
+            "https://api.example.com".to_string(),
+        );
+        assert_eq!(
+            check_ws(&format!("rd.example.com:{}", RENDEZVOUS_PORT)),
+            &format!("wss://rd.example.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+        );
     }
 }

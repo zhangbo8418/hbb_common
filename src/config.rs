@@ -917,6 +917,33 @@ impl Config {
         rendezvous_server
     }
 
+    /// Resolved API server URL, matching `crate::get_api_server` in the main crate.
+    ///
+    /// Priority: `api-server` option → derive from custom rendezvous (`port - 2`) → built-in default.
+    pub fn get_api_server() -> String {
+        let api = Self::get_option(keys::OPTION_API_SERVER);
+        if !api.is_empty() {
+            return api;
+        }
+        let s0 = Self::get_custom_rendezvous_server_for_api();
+        if !s0.is_empty() {
+            let s = crate::socket_client::increase_port(&s0, -2);
+            if s == s0 {
+                return format!("http://{}:{}", s, RENDEZVOUS_PORT - 2);
+            }
+            return format!("http://{}", s);
+        }
+        "https://rd.bobohome.store:8415".to_owned()
+    }
+
+    fn get_custom_rendezvous_server_for_api() -> String {
+        let custom = Self::get_option("custom-rendezvous-server");
+        if !custom.is_empty() {
+            return custom;
+        }
+        PROD_RENDEZVOUS_SERVER.read().unwrap().clone()
+    }
+
     pub fn get_rendezvous_servers() -> Vec<String> {
         let s = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
         if !s.is_empty() {
