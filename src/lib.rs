@@ -487,6 +487,8 @@ pub struct VersionCheckRequest {
 pub struct VersionCheckResponse {
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub version: String,
 }
 
 pub const VER_TYPE_RUSTDESK_CLIENT: &str = "rustdesk-client";
