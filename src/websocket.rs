@@ -1,6 +1,6 @@
 use crate::{
     config::{
-        keys::{OPTION_API_SERVER, OPTION_RELAY_SERVER},
+        keys::OPTION_RELAY_SERVER,
         use_ws, Config, Socks5Server, RELAY_PORT, RENDEZVOUS_PORT, WS_RELAY_PORT,
         WS_RENDEZVOUS_PORT,
     },
@@ -662,15 +662,15 @@ mod tests {
         // api-server empty -> built-in https://rd.bobohome.store:8415 -> wss + WS_RENDEZVOUS_PORT
         assert_eq!(
             check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
-            &format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+            format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
         );
         assert_eq!(
             check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT - 1)),
-            &format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+            format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
         );
         assert_eq!(
             check_ws(&format!("rustdesk.com:{}", RELAY_PORT)),
-            &format!("wss://rustdesk.com:{}/ws/relay", WS_RELAY_PORT)
+            format!("wss://rustdesk.com:{}/ws/relay", WS_RELAY_PORT)
         );
         // set relay-server without port
         Config::set_option("relay-server".to_string(), "127.0.0.1".to_string());
@@ -803,7 +803,7 @@ mod tests {
         // api-server without port -> wss on 443 (omit port in URL)
         Config::set_option("custom-rendezvous-server".to_string(), "rustdesk.com".to_string());
         Config::set_option(
-            OPTION_API_SERVER.to_string(),
+            "api-server".to_string(),
             "https://api.rustdesk.com".to_string(),
         );
         assert_eq!(
@@ -813,7 +813,7 @@ mod tests {
 
         // api-server http without port -> ws on 80
         Config::set_option(
-            OPTION_API_SERVER.to_string(),
+            "api-server".to_string(),
             "http://api.rustdesk.com".to_string(),
         );
         assert_eq!(
@@ -823,12 +823,12 @@ mod tests {
 
         // api-server with explicit port, rendezvous without port -> WS_RENDEZVOUS_PORT
         Config::set_option(
-            OPTION_API_SERVER.to_string(),
+            "api-server".to_string(),
             "https://api.example.com:8443".to_string(),
         );
         assert_eq!(
             check_ws(&format!("rustdesk.com:{}", RENDEZVOUS_PORT)),
-            &format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+            format!("wss://rustdesk.com:{}/ws/id", WS_RENDEZVOUS_PORT)
         );
 
         // custom rendezvous with port -> wss + TCP port + 2
@@ -837,26 +837,26 @@ mod tests {
             "rd.example.com:8417".to_string(),
         );
         Config::set_option(
-            OPTION_API_SERVER.to_string(),
+            "api-server".to_string(),
             "https://api.example.com".to_string(),
         );
         assert_eq!(
             check_ws(&format!("rd.example.com:{}", RENDEZVOUS_PORT)),
-            &format!("wss://rd.example.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+            format!("wss://rd.example.com:{}/ws/id", WS_RENDEZVOUS_PORT)
         );
         assert_eq!(
             check_ws(&format!("rd.example.com:{}", RELAY_PORT)),
-            &format!("wss://rd.example.com:{}/ws/relay", WS_RELAY_PORT)
+            format!("wss://rd.example.com:{}/ws/relay", WS_RELAY_PORT)
         );
 
         // api without port + rendezvous with port -> still use TCP + 2
         Config::set_option(
-            OPTION_API_SERVER.to_string(),
+            "api-server".to_string(),
             "https://api.example.com".to_string(),
         );
         assert_eq!(
             check_ws(&format!("rd.example.com:{}", RENDEZVOUS_PORT)),
-            &format!("wss://rd.example.com:{}/ws/id", WS_RENDEZVOUS_PORT)
+            format!("wss://rd.example.com:{}/ws/id", WS_RENDEZVOUS_PORT)
         );
         Config::set_options(options);
     }
